@@ -1,34 +1,126 @@
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
+@import url('https://fonts.googleapis.com/css2?family=Merriweather:wght@300;400;700;900&family=Inter:wght@300;400;500;600;700&display=swap');
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-    .App-logo {
-        animation: App-logo-spin infinite 20s linear;
-    }
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #FDFBF5;
+  color: #212121;
 }
 
-.App-header {
-    background-color: #0f0f10;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
+.reading-text {
+  font-family: 'Merriweather', serif;
+  line-height: 1.8;
+  letter-spacing: 0.01em;
 }
 
-.App-link {
-    color: #61dafb;
+.paper-texture {
+  background-color: #FDFBF5;
+  background-image: 
+    linear-gradient(90deg, rgba(141, 110, 99, 0.02) 1px, transparent 1px),
+    linear-gradient(rgba(141, 110, 99, 0.02) 1px, transparent 1px);
+  background-size: 20px 20px;
 }
 
-@keyframes App-logo-spin {
-    from {
-        transform: rotate(0deg);
-    }
-    to {
-        transform: rotate(360deg);
-    }
+.paper-card {
+  background: linear-gradient(135deg, #FDFBF5 0%, #FAF6EB 100%);
+  box-shadow: 
+    0 2px 4px rgba(141, 110, 99, 0.08),
+    0 4px 12px rgba(141, 110, 99, 0.06),
+    inset 0 0 0 1px rgba(141, 110, 99, 0.1);
+}
+
+.book-shadow {
+  box-shadow: 
+    2px 0 8px rgba(0, 0, 0, 0.1),
+    4px 0 12px rgba(0, 0, 0, 0.08),
+    6px 0 16px rgba(0, 0, 0, 0.05);
+}
+
+.ink-text {
+  color: #212121;
+}
+
+.accent-text {
+  color: #8D6E63;
+}
+
+.page-turn {
+  transition: transform 0.6s cubic-bezier(0.645, 0.045, 0.355, 1);
+}
+
+.scroll-smooth {
+  scroll-behavior: smooth;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #FAF6EB;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #8D6E63;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #6D4C41;
+}
+
+/* Reading animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.5s ease-out;
+}
+
+/* Button hover effects */
+.btn-primary {
+  background: linear-gradient(135deg, #8D6E63 0%, #6D4C41 100%);
+  color: white;
+  padding: 12px 32px;
+  border-radius: 8px;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  border: none;
+  cursor: pointer;
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(141, 110, 99, 0.3);
+}
+
+.btn-secondary {
+  background: white;
+  color: #8D6E63;
+  padding: 12px 32px;
+  border-radius: 8px;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  border: 2px solid #8D6E63;
+  cursor: pointer;
+}
+
+.btn-secondary:hover {
+  background: #FAF6EB;
+  transform: translateY(-2px);
 }
