@@ -329,7 +329,8 @@ async def get_reading_progress(book_id: str, current_user: User = Depends(get_cu
         new_progress = ReadingProgress(user_id=current_user.id, book_id=book_id)
         await db.reading_progress.insert_one(new_progress.model_dump())
         return new_progress
-    return ReadingProgress(**progress)
+    else:
+        return ReadingProgress(**progress)
 
 @api_router.put("/reading/progress/{book_id}", response_model=ReadingProgress)
 async def update_reading_progress(
