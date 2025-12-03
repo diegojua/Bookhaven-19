@@ -10,6 +10,12 @@ body {
   font-family: 'Inter', sans-serif;
   background-color: #FDFBF5;
   color: #212121;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+body.dark-mode {
+  background-color: #1a1a1a;
+  color: #e5e5e5;
 }
 
 .reading-text {
@@ -26,12 +32,24 @@ body {
   background-size: 20px 20px;
 }
 
+.dark-mode .paper-texture {
+  background-color: #1a1a1a;
+  background-image: none;
+}
+
 .paper-card {
   background: linear-gradient(135deg, #FDFBF5 0%, #FAF6EB 100%);
   box-shadow: 
     0 2px 4px rgba(141, 110, 99, 0.08),
     0 4px 12px rgba(141, 110, 99, 0.06),
     inset 0 0 0 1px rgba(141, 110, 99, 0.1);
+}
+
+.dark-mode .paper-card {
+  background: linear-gradient(135deg, #2d2d2d 0%, #262626 100%);
+  box-shadow: 
+    0 2px 4px rgba(0, 0, 0, 0.3),
+    0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 .book-shadow {
@@ -45,8 +63,16 @@ body {
   color: #212121;
 }
 
+.dark-mode .ink-text {
+  color: #e5e5e5;
+}
+
 .accent-text {
   color: #8D6E63;
+}
+
+.dark-mode .accent-text {
+  color: #a98c7f;
 }
 
 .page-turn {
@@ -67,13 +93,25 @@ body {
   background: #FAF6EB;
 }
 
+.dark-mode ::-webkit-scrollbar-track {
+  background: #2d2d2d;
+}
+
 ::-webkit-scrollbar-thumb {
   background: #8D6E63;
   border-radius: 4px;
 }
 
+.dark-mode ::-webkit-scrollbar-thumb {
+  background: #666;
+}
+
 ::-webkit-scrollbar-thumb:hover {
   background: #6D4C41;
+}
+
+.dark-mode ::-webkit-scrollbar-thumb:hover {
+  background: #888;
 }
 
 /* Reading animations */
@@ -92,7 +130,12 @@ body {
   animation: fadeIn 0.5s ease-out;
 }
 
-/* Button hover effects */
+/* Hover scale */
+.hover\:scale-102:hover {
+  transform: scale(1.02);
+}
+
+/* Button styles */
 .btn-primary {
   background: linear-gradient(135deg, #8D6E63 0%, #6D4C41 100%);
   color: white;
@@ -123,4 +166,18 @@ body {
 .btn-secondary:hover {
   background: #FAF6EB;
   transform: translateY(-2px);
+}
+
+/* Dark mode specific styles */
+.dark-mode input,
+.dark-mode textarea,
+.dark-mode select {
+  background-color: #2d2d2d;
+  border-color: #444;
+  color: #e5e5e5;
+}
+
+.dark-mode input::placeholder,
+.dark-mode textarea::placeholder {
+  color: #888;
 }

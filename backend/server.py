@@ -13,6 +13,7 @@ from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
 import jwt
 import shutil
+import random
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -71,8 +72,12 @@ class Book(BaseModel):
     file_format: str
     file_size: int
     language: str = "pt"
+    category: str = "fiction"
     total_pages: int = 0
     total_chapters: int = 0
+    rating: float = 0.0
+    reviews: int = 0
+    trending: bool = False
     is_public: bool = True
     uploaded_by: str
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -83,6 +88,7 @@ class BookCreate(BaseModel):
     description: Optional[str] = None
     cover_url: Optional[str] = None
     language: str = "pt"
+    category: str = "fiction"
     total_pages: int = 0
     total_chapters: int = 0
     is_public: bool = True
@@ -249,6 +255,7 @@ async def create_book(
     author: str = Form(...),
     description: Optional[str] = Form(None),
     cover_url: Optional[str] = Form(None),
+    category: str = Form("fiction"),
     language: str = Form("pt"),
     total_pages: int = Form(0),
     total_chapters: int = Form(0),
@@ -268,18 +275,22 @@ async def create_book(
     
     file_size = file_path.stat().st_size
     
-    # Create book
+    # Create book with random rating and reviews
     book = Book(
         title=title,
         author=author,
         description=description,
         cover_url=cover_url,
+        category=category,
         file_url=f"/uploads/{file_id}.{file_extension}",
         file_format=file_extension,
         file_size=file_size,
         language=language,
         total_pages=total_pages,
         total_chapters=total_chapters,
+        rating=round(random.uniform(3.5, 5.0), 1),
+        reviews=random.randint(10, 500),
+        trending=random.choice([True, False]),
         uploaded_by=current_user.id
     )
     
