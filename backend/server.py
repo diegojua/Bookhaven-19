@@ -326,8 +326,9 @@ async def delete_book(book_id: str, current_user: User = Depends(get_current_use
 async def get_reading_progress(book_id: str, current_user: User = Depends(get_current_user)):
     progress = await db.reading_progress.find_one({"user_id": current_user.id, "book_id": book_id}, {"_id": 0})
     if not progress:
-        progress = ReadingProgress(user_id=current_user.id, book_id=book_id)
-        await db.reading_progress.insert_one(progress.model_dump())
+        new_progress = ReadingProgress(user_id=current_user.id, book_id=book_id)
+        await db.reading_progress.insert_one(new_progress.model_dump())
+        return new_progress
     return ReadingProgress(**progress)
 
 @api_router.put("/reading/progress/{book_id}", response_model=ReadingProgress)
@@ -336,10 +337,6 @@ async def update_reading_progress(
     update: ReadingProgressUpdate,
     current_user: User = Depends(get_current_user)
 ):
-    progress = await db.reading_progress.find_one({"user_id": current_user.id, "book_id": book_id}, {"_id": 0})
-    if not progress:
-        progress = ReadingProgress(user_id=current_user.id, book_id=book_id).model_dump()
-    
     update_data = {k: v for k, v in update.model_dump().items() if v is not None}
     update_data["last_read_at"] = datetime.now(timezone.utc).isoformat()
     
