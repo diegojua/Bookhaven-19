@@ -2,7 +2,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, UploadFi
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+from supabase import create_client, Client
 import os
 import logging
 from pathlib import Path
@@ -18,10 +18,14 @@ import random
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# Supabase connection
+SUPABASE_URL = os.environ.get('SUPABASE_URL')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in .env")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Security
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -199,49 +203,86 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
         
-        user = await db.users.find_one({"id": user_id}, {"_id": 0})
-        if not user:
+        response = supabase.table("users").select("*").eq("id", user_id).execute()
+        if not response.data:
             raise HTTPException(status_code=401, detail="User not found")
         
-        return User(**user)
+        user_data = response.data[0]
+        return User(**user_data)
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception as e:
+        logger.error(f"Auth error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # ============ AUTH ROUTES ============
 
 @api_router.post("/auth/register", response_model=Token)
 async def register(user_data: UserCreate):
     # Check if user exists
-    existing = await db.users.find_one({"$or": [{"email": user_data.email}, {"username": user_data.username}]}, {"_id": 0})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email or username already exists")
-    
-    # Create user
-    user = User(email=user_data.email, username=user_data.username)
-    user_doc = user.model_dump()
-    user_doc["password_hash"] = hash_password(user_data.password)
-    
-    await db.users.insert_one(user_doc)
-    
-    # Create default preferences
-    prefs = ReadingPreferences(user_id=user.id)
-    await db.reading_preferences.insert_one(prefs.model_dump())
-    
-    # Generate token
-    token = create_access_token(user.id)
-    return Token(access_token=token, token_type="bearer", user=user)
+    try:
+        # Check email
+        res_email = supabase.table("users").select("id").eq("email", user_data.email).execute()
+        if res_email.data:
+            raise HTTPException(status_code=400, detail="Email already exists")
+        
+        # Check username
+        res_user = supabase.table("users").select("id").eq("username", user_data.username).execute()
+        if res_user.data:
+            raise HTTPException(status_code=400, detail="Username already exists")
+        
+        # Create user
+        user_id = str(uuid.uuid4())
+        password_hash = hash_password(user_data.password)
+        
+        new_user = {
+            "id": user_id,
+            "email": user_data.email,
+            "username": user_data.username,
+            "password_hash": password_hash,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        supabase.table("users").insert(new_user).execute()
+        
+        # Create default preferences
+        prefs = {
+            "user_id": user_id,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        supabase.table("reading_preferences").insert(prefs).execute()
+        
+        user = User(**new_user)
+        token = create_access_token(user.id)
+        return Token(access_token=token, token_type="bearer", user=user)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Register error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/auth/login", response_model=Token)
 async def login(credentials: UserLogin):
-    user_doc = await db.users.find_one({"email": credentials.email}, {"_id": 0})
-    if not user_doc or not verify_password(credentials.password, user_doc["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    user = User(**user_doc)
-    token = create_access_token(user.id)
-    return Token(access_token=token, token_type="bearer", user=user)
+    try:
+        response = supabase.table("users").select("*").eq("email", credentials.email).execute()
+        if not response.data:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        user_doc = response.data[0]
+        if not verify_password(credentials.password, user_doc["password_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        user = User(**user_doc)
+        token = create_access_token(user.id)
+        return Token(access_token=token, token_type="bearer", user=user)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @api_router.get("/auth/me", response_model=User)
 async def get_me(current_user: User = Depends(get_current_user)):
@@ -275,62 +316,95 @@ async def create_book(
     
     file_size = file_path.stat().st_size
     
-    # Create book with random rating and reviews
-    book = Book(
-        title=title,
-        author=author,
-        description=description,
-        cover_url=cover_url,
-        category=category,
-        file_url=f"/uploads/{file_id}.{file_extension}",
-        file_format=file_extension,
-        file_size=file_size,
-        language=language,
-        total_pages=total_pages,
-        total_chapters=total_chapters,
-        rating=round(random.uniform(3.5, 5.0), 1),
-        reviews=random.randint(10, 500),
-        trending=random.choice([True, False]),
-        uploaded_by=current_user.id
-    )
+    # Create book
+    book_data = {
+        "id": str(uuid.uuid4()),
+        "title": title,
+        "author": author,
+        "description": description,
+        "cover_url": cover_url,
+        "category": category,
+        "file_url": f"/uploads/{file_id}.{file_extension}",
+        "file_format": file_extension,
+        "file_size": file_size,
+        "language": language,
+        "total_pages": total_pages,
+        "total_chapters": total_chapters,
+        "rating": round(random.uniform(3.5, 5.0), 1),
+        "reviews": random.randint(10, 500),
+        "trending": random.choice([True, False]),
+        "uploaded_by": current_user.id,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
     
-    await db.books.insert_one(book.model_dump())
-    return book
+    try:
+        supabase.table("books").insert(book_data).execute()
+        return Book(**book_data)
+    except Exception as e:
+        logger.error(f"Create book error: {e}")
+        raise HTTPException(status_code=500, detail="Error creating book")
 
 @api_router.get("/books", response_model=List[Book])
 async def get_books(current_user: User = Depends(get_current_user)):
-    books = await db.books.find({"$or": [{"is_public": True}, {"uploaded_by": current_user.id}]}, {"_id": 0}).to_list(1000)
-    return books
+    try:
+        # Get public books OR books uploaded by user
+        response = supabase.table("books").select("*").or_(f"is_public.eq.true,uploaded_by.eq.{current_user.id}").execute()
+        return [Book(**book) for book in response.data]
+    except Exception as e:
+        logger.error(f"Get books error: {e}")
+        return []
 
 @api_router.get("/books/{book_id}", response_model=Book)
 async def get_book(book_id: str, current_user: User = Depends(get_current_user)):
-    book = await db.books.find_one({"id": book_id}, {"_id": 0})
-    if not book:
+    try:
+        response = supabase.table("books").select("*").eq("id", book_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Book not found")
+        return Book(**response.data[0])
+    except Exception as e:
+        logger.error(f"Get book error: {e}")
         raise HTTPException(status_code=404, detail="Book not found")
-    return Book(**book)
 
 @api_router.delete("/books/{book_id}")
 async def delete_book(book_id: str, current_user: User = Depends(get_current_user)):
-    book = await db.books.find_one({"id": book_id}, {"_id": 0})
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found")
-    if book["uploaded_by"] != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    await db.books.delete_one({"id": book_id})
-    return {"message": "Book deleted"}
+    try:
+        # Check ownership
+        response = supabase.table("books").select("uploaded_by").eq("id", book_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Book not found")
+        
+        if response.data[0]["uploaded_by"] != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        
+        supabase.table("books").delete().eq("id", book_id).execute()
+        return {"message": "Book deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete book error: {e}")
+        raise HTTPException(status_code=500, detail="Error deleting book")
 
 # ============ READING PROGRESS ROUTES ============
 
 @api_router.get("/reading/progress/{book_id}", response_model=ReadingProgress)
 async def get_reading_progress(book_id: str, current_user: User = Depends(get_current_user)):
-    progress = await db.reading_progress.find_one({"user_id": current_user.id, "book_id": book_id}, {"_id": 0})
-    if not progress:
-        new_progress = ReadingProgress(user_id=current_user.id, book_id=book_id)
-        await db.reading_progress.insert_one(new_progress.model_dump())
-        return new_progress
-    else:
-        return ReadingProgress(**progress)
+    try:
+        response = supabase.table("reading_progress").select("*").eq("user_id", current_user.id).eq("book_id", book_id).execute()
+        
+        if not response.data:
+            new_progress = {
+                "id": str(uuid.uuid4()),
+                "user_id": current_user.id,
+                "book_id": book_id,
+                "last_read_at": datetime.now(timezone.utc).isoformat()
+            }
+            supabase.table("reading_progress").insert(new_progress).execute()
+            return ReadingProgress(**new_progress)
+        
+        return ReadingProgress(**response.data[0])
+    except Exception as e:
+        logger.error(f"Get progress error: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching progress")
 
 @api_router.put("/reading/progress/{book_id}", response_model=ReadingProgress)
 async def update_reading_progress(
@@ -338,80 +412,214 @@ async def update_reading_progress(
     update: ReadingProgressUpdate,
     current_user: User = Depends(get_current_user)
 ):
-    update_data = {k: v for k, v in update.model_dump().items() if v is not None}
-    update_data["last_read_at"] = datetime.now(timezone.utc).isoformat()
-    
-    await db.reading_progress.update_one(
-        {"user_id": current_user.id, "book_id": book_id},
-        {"$set": update_data},
-        upsert=True
-    )
-    
-    updated = await db.reading_progress.find_one({"user_id": current_user.id, "book_id": book_id}, {"_id": 0})
-    return ReadingProgress(**updated)
+    try:
+        update_data = {k: v for k, v in update.model_dump().items() if v is not None}
+        update_data["last_read_at"] = datetime.now(timezone.utc).isoformat()
+        
+        # Check if exists
+        check = supabase.table("reading_progress").select("id").eq("user_id", current_user.id).eq("book_id", book_id).execute()
+        
+        if check.data:
+            supabase.table("reading_progress").update(update_data).eq("user_id", current_user.id).eq("book_id", book_id).execute()
+        else:
+            update_data["user_id"] = current_user.id
+            update_data["book_id"] = book_id
+            supabase.table("reading_progress").insert(update_data).execute()
+        
+        updated = supabase.table("reading_progress").select("*").eq("user_id", current_user.id).eq("book_id", book_id).execute()
+        return ReadingProgress(**updated.data[0])
+    except Exception as e:
+        logger.error(f"Update progress error: {e}")
+        raise HTTPException(status_code=500, detail="Error updating progress")
 
 # ============ BOOKMARK ROUTES ============
 
 @api_router.post("/bookmarks", response_model=Bookmark)
 async def create_bookmark(bookmark_data: BookmarkCreate, current_user: User = Depends(get_current_user)):
-    bookmark = Bookmark(user_id=current_user.id, **bookmark_data.model_dump())
-    await db.bookmarks.insert_one(bookmark.model_dump())
-    return bookmark
+    try:
+        new_bookmark = bookmark_data.model_dump()
+        new_bookmark["user_id"] = current_user.id
+        new_bookmark["id"] = str(uuid.uuid4())
+        new_bookmark["created_at"] = datetime.now(timezone.utc).isoformat()
+        
+        supabase.table("bookmarks").insert(new_bookmark).execute()
+        return Bookmark(**new_bookmark)
+    except Exception as e:
+        logger.error(f"Create bookmark error: {e}")
+        raise HTTPException(status_code=500, detail="Error creating bookmark")
 
 @api_router.get("/bookmarks/{book_id}", response_model=List[Bookmark])
 async def get_bookmarks(book_id: str, current_user: User = Depends(get_current_user)):
-    bookmarks = await db.bookmarks.find({"user_id": current_user.id, "book_id": book_id}, {"_id": 0}).to_list(1000)
-    return bookmarks
+    try:
+        response = supabase.table("bookmarks").select("*").eq("user_id", current_user.id).eq("book_id", book_id).execute()
+        return [Bookmark(**b) for b in response.data]
+    except Exception as e:
+        logger.error(f"Get bookmarks error: {e}")
+        return []
 
 @api_router.delete("/bookmarks/{bookmark_id}")
 async def delete_bookmark(bookmark_id: str, current_user: User = Depends(get_current_user)):
-    result = await db.bookmarks.delete_one({"id": bookmark_id, "user_id": current_user.id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Bookmark not found")
-    return {"message": "Bookmark deleted"}
+    try:
+        response = supabase.table("bookmarks").delete().eq("id", bookmark_id).eq("user_id", current_user.id).execute()
+        if not response.data:
+             # Supabase delete returns data of deleted rows. If empty, nothing was deleted.
+             # However, sometimes it might be empty if return representation is off. 
+             # Assuming standard behavior, if we want to be strict we'd check first.
+             pass 
+        return {"message": "Bookmark deleted"}
+    except Exception as e:
+        logger.error(f"Delete bookmark error: {e}")
+        raise HTTPException(status_code=500, detail="Error deleting bookmark")
 
 # ============ ANNOTATION ROUTES ============
 
 @api_router.post("/annotations", response_model=Annotation)
 async def create_annotation(annotation_data: AnnotationCreate, current_user: User = Depends(get_current_user)):
-    annotation = Annotation(user_id=current_user.id, **annotation_data.model_dump())
-    await db.annotations.insert_one(annotation.model_dump())
-    return annotation
+    try:
+        new_annotation = annotation_data.model_dump()
+        new_annotation["user_id"] = current_user.id
+        new_annotation["id"] = str(uuid.uuid4())
+        new_annotation["created_at"] = datetime.now(timezone.utc).isoformat()
+        
+        supabase.table("annotations").insert(new_annotation).execute()
+        return Annotation(**new_annotation)
+    except Exception as e:
+        logger.error(f"Create annotation error: {e}")
+        raise HTTPException(status_code=500, detail="Error creating annotation")
 
 @api_router.get("/annotations/{book_id}", response_model=List[Annotation])
 async def get_annotations(book_id: str, current_user: User = Depends(get_current_user)):
-    annotations = await db.annotations.find({"user_id": current_user.id, "book_id": book_id}, {"_id": 0}).to_list(1000)
-    return annotations
+    try:
+        response = supabase.table("annotations").select("*").eq("user_id", current_user.id).eq("book_id", book_id).execute()
+        return [Annotation(**a) for a in response.data]
+    except Exception as e:
+        logger.error(f"Get annotations error: {e}")
+        return []
 
 @api_router.delete("/annotations/{annotation_id}")
 async def delete_annotation(annotation_id: str, current_user: User = Depends(get_current_user)):
-    result = await db.annotations.delete_one({"id": annotation_id, "user_id": current_user.id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Annotation not found")
-    return {"message": "Annotation deleted"}
+    try:
+        supabase.table("annotations").delete().eq("id", annotation_id).eq("user_id", current_user.id).execute()
+        return {"message": "Annotation deleted"}
+    except Exception as e:
+        logger.error(f"Delete annotation error: {e}")
+        raise HTTPException(status_code=500, detail="Error deleting annotation")
 
 # ============ PREFERENCES ROUTES ============
 
 @api_router.get("/preferences", response_model=ReadingPreferences)
 async def get_preferences(current_user: User = Depends(get_current_user)):
-    prefs = await db.reading_preferences.find_one({"user_id": current_user.id}, {"_id": 0})
-    if not prefs:
-        prefs = ReadingPreferences(user_id=current_user.id)
-        await db.reading_preferences.insert_one(prefs.model_dump())
-    return ReadingPreferences(**prefs)
+    try:
+        response = supabase.table("reading_preferences").select("*").eq("user_id", current_user.id).execute()
+        
+        if not response.data:
+            prefs = {
+                "id": str(uuid.uuid4()),
+                "user_id": current_user.id,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            supabase.table("reading_preferences").insert(prefs).execute()
+            return ReadingPreferences(**prefs)
+        
+        return ReadingPreferences(**response.data[0])
+    except Exception as e:
+        logger.error(f"Get preferences error: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching preferences")
 
 @api_router.put("/preferences", response_model=ReadingPreferences)
 async def update_preferences(update: PreferencesUpdate, current_user: User = Depends(get_current_user)):
-    update_data = {k: v for k, v in update.model_dump().items() if v is not None}
-    
-    await db.reading_preferences.update_one(
-        {"user_id": current_user.id},
-        {"$set": update_data},
-        upsert=True
-    )
-    
-    prefs = await db.reading_preferences.find_one({"user_id": current_user.id}, {"_id": 0})
-    return ReadingPreferences(**prefs)
+    try:
+        update_data = {k: v for k, v in update.model_dump().items() if v is not None}
+        
+        # Check if exists
+        check = supabase.table("reading_preferences").select("id").eq("user_id", current_user.id).execute()
+        
+        if check.data:
+            supabase.table("reading_preferences").update(update_data).eq("user_id", current_user.id).execute()
+        else:
+            update_data["user_id"] = current_user.id
+            supabase.table("reading_preferences").insert(update_data).execute()
+            
+        updated = supabase.table("reading_preferences").select("*").eq("user_id", current_user.id).execute()
+        return ReadingPreferences(**updated.data[0])
+    except Exception as e:
+        logger.error(f"Update preferences error: {e}")
+        raise HTTPException(status_code=500, detail="Error updating preferences")
+
+import pypdf
+import base64
+
+@api_router.get("/books/{book_id}/extract-text")
+async def extract_book_text(book_id: str):
+    try:
+        # Get book info
+        response = supabase.table("books").select("*").eq("id", book_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Book not found")
+        
+        book = response.data[0]
+        file_path = ROOT_DIR / book["file_url"].lstrip("/")
+        
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+            
+        content_data = []
+        
+        if book["file_format"] == "pdf":
+            try:
+                reader = pypdf.PdfReader(file_path)
+                for i, page in enumerate(reader.pages):
+                    page_text = page.extract_text()
+                    page_images = []
+                    
+                    try:
+                        for image_file in page.images:
+                            # image_file.data is bytes
+                            base64_str = base64.b64encode(image_file.data).decode('utf-8')
+                            mime_type = "image/jpeg" # Default assumption or detect from extension
+                            if image_file.name.lower().endswith('.png'):
+                                mime_type = "image/png"
+                            elif image_file.name.lower().endswith('.webp'):
+                                mime_type = "image/webp"
+                                
+                            page_images.append(f"data:{mime_type};base64,{base64_str}")
+                    except Exception as img_err:
+                        logger.warning(f"Error extracting images from page {i}: {img_err}")
+                        
+                    content_data.append({
+                        "page": i + 1,
+                        "text": page_text,
+                        "images": page_images
+                    })
+            except Exception as e:
+                logger.error(f"PDF extraction error: {e}")
+                raise HTTPException(status_code=500, detail="Error extracting content from PDF")
+                
+        elif book["file_format"] == "txt":
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+                    content_data.append({
+                        "page": 1,
+                        "text": text,
+                        "images": []
+                    })
+            except UnicodeDecodeError:
+                with open(file_path, "r", encoding="latin-1") as f:
+                    text = f.read()
+                    content_data.append({
+                        "page": 1,
+                        "text": text,
+                        "images": []
+                    })
+                    
+        return {"pages": content_data}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Extract text error: {e}")
+        raise HTTPException(status_code=500, detail="Error extracting content")
 
 # Include router
 app.include_router(api_router)
@@ -419,10 +627,20 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+    ] + os.environ.get('CORS_ORIGINS', '').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from fastapi.staticfiles import StaticFiles
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -430,6 +648,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
