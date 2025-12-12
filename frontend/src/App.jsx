@@ -47,6 +47,7 @@ function App() {
           <Route path="/library" element={<ProtectedRoute><LibraryPage user={user} setUser={setUser} /></ProtectedRoute>} />
           <Route path="/reader/:bookId" element={<ProtectedRoute><ReaderPage user={user} /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><SettingsPage user={user} setUser={setUser} /></ProtectedRoute>} />
+          <Route path="*" element={<import('@/pages/NotFoundPage').then(m => m.default) />} />
         </Routes>
       </BrowserRouter>
       <Toaster position="top-right" />
