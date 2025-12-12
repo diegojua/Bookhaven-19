@@ -13,10 +13,14 @@ from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
 import jwt
 import shutil
+import tempfile
 import random
 
+# Remove ROOT_DIR/UPLOAD_DIR usage if no longer needed for static serving, 
+# but ROOT_DIR is used for .env
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
 
 # Supabase connection
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
@@ -35,8 +39,11 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_DAYS = 7
 
 # File upload
-UPLOAD_DIR = ROOT_DIR / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRATION_DAYS = 7
+
+# Supabase Storage Bucket - User must create this manually if it doesn't exist
+STORAGE_BUCKET = "uploads"
 
 # Create the main app
 app = FastAPI()
@@ -309,12 +316,31 @@ async def create_book(
         raise HTTPException(status_code=400, detail="Invalid file format")
     
     file_id = str(uuid.uuid4())
-    file_path = UPLOAD_DIR / f"{file_id}.{file_extension}"
+    # Save file to Supabase Storage
+    path = f"{file_id}.{file_extension}"
     
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    file_size = file_path.stat().st_size
+    try:
+        # Upload
+        file_bytes = await file.read()
+        res = supabase.storage.from_(STORAGE_BUCKET).upload(
+            path=path,
+            file=file_bytes,
+            file_options={"content-type": file.content_type}
+        )
+        # file_url is usually just the path if we use from_().get_public_url()
+        # but we need to store the relative path for our download logic or full URL
+        # Storing relative path is flexible.
+        storage_path = path 
+        
+        # Get public URL for frontend display
+        public_url_res = supabase.storage.from_(STORAGE_BUCKET).get_public_url(path)
+        # public_url_res is just a string URL
+        
+        file_size = len(file_bytes)
+        
+    except Exception as e:
+        logger.error(f"Upload error: {e}")
+        raise HTTPException(status_code=500, detail="Error uploading file to storage")
     
     # Create book
     book_data = {
@@ -324,7 +350,10 @@ async def create_book(
         "description": description,
         "cover_url": cover_url,
         "category": category,
-        "file_url": f"/uploads/{file_id}.{file_extension}",
+        "cover_url": cover_url,
+        "category": category,
+        "file_url": storage_path, # Storing just the filename/path in bucket
+        "file_format": file_extension,
         "file_format": file_extension,
         "file_size": file_size,
         "language": language,
@@ -376,6 +405,15 @@ async def delete_book(book_id: str, current_user: User = Depends(get_current_use
         if response.data[0]["uploaded_by"] != current_user.id:
             raise HTTPException(status_code=403, detail="Not authorized")
         
+        # Delete from storage first
+        try:
+             # Retrieve file_url (which we stored as path)
+             book = response.data[0]
+             file_path_in_bucket = book["file_url"]
+             supabase.storage.from_(STORAGE_BUCKET).remove([file_path_in_bucket])
+        except Exception as storage_err:
+             logger.warning(f"Storage delete error: {storage_err}")
+
         supabase.table("books").delete().eq("id", book_id).execute()
         return {"message": "Book deleted"}
     except HTTPException:
@@ -558,61 +596,68 @@ async def extract_book_text(book_id: str):
             raise HTTPException(status_code=404, detail="Book not found")
         
         book = response.data[0]
-        file_path = ROOT_DIR / book["file_url"].lstrip("/")
+        # file_url is the path in bucket
+        file_path_in_bucket = book["file_url"]
         
-        if not file_path.exists():
-            raise HTTPException(status_code=404, detail="File not found")
+        # Download to temp file
+        try:
+            # Download bytes
+            res = supabase.storage.from_(STORAGE_BUCKET).download(file_path_in_bucket)
+            # res is bytes
             
-        content_data = []
-        
-        if book["file_format"] == "pdf":
-            try:
-                reader = pypdf.PdfReader(file_path)
-                for i, page in enumerate(reader.pages):
-                    page_text = page.extract_text()
-                    page_images = []
-                    
-                    try:
-                        for image_file in page.images:
-                            # image_file.data is bytes
-                            base64_str = base64.b64encode(image_file.data).decode('utf-8')
-                            mime_type = "image/jpeg" # Default assumption or detect from extension
-                            if image_file.name.lower().endswith('.png'):
-                                mime_type = "image/png"
-                            elif image_file.name.lower().endswith('.webp'):
-                                mime_type = "image/webp"
-                                
-                            page_images.append(f"data:{mime_type};base64,{base64_str}")
-                    except Exception as img_err:
-                        logger.warning(f"Error extracting images from page {i}: {img_err}")
-                        
-                    content_data.append({
-                        "page": i + 1,
-                        "text": page_text,
-                        "images": page_images
-                    })
-            except Exception as e:
-                logger.error(f"PDF extraction error: {e}")
-                raise HTTPException(status_code=500, detail="Error extracting content from PDF")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{book['file_format']}") as tmp_file:
+                tmp_file.write(res)
+                tmp_path = Path(tmp_file.name)
                 
-        elif book["file_format"] == "txt":
+            content_data = []
+            
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    text = f.read()
+                if book["file_format"] == "pdf":
+                    reader = pypdf.PdfReader(str(tmp_path))
+                    for i, page in enumerate(reader.pages):
+                        page_text = page.extract_text()
+                        page_images = []
+                        
+                        try:
+                            for image_file in page.images:
+                                base64_str = base64.b64encode(image_file.data).decode('utf-8')
+                                mime_type = "image/jpeg"
+                                if image_file.name.lower().endswith('.png'):
+                                    mime_type = "image/png"
+                                elif image_file.name.lower().endswith('.webp'):
+                                    mime_type = "image/webp"
+                                page_images.append(f"data:{mime_type};base64,{base64_str}")
+                        except Exception:
+                            pass # Ignore image errors
+                            
+                        content_data.append({
+                            "page": i + 1,
+                            "text": page_text,
+                            "images": page_images
+                        })
+                        
+                elif book["file_format"] == "txt":
+                    with open(tmp_path, "rb") as f:
+                        raw = f.read()
+                        try:
+                            text = raw.decode("utf-8")
+                        except UnicodeDecodeError:
+                            text = raw.decode("latin-1")
+                            
                     content_data.append({
                         "page": 1,
                         "text": text,
                         "images": []
                     })
-            except UnicodeDecodeError:
-                with open(file_path, "r", encoding="latin-1") as f:
-                    text = f.read()
-                    content_data.append({
-                        "page": 1,
-                        "text": text,
-                        "images": []
-                    })
-                    
+            finally:
+                # Cleanup temp file
+                if tmp_path.exists():
+                     os.unlink(tmp_path)
+                     
+        except Exception as e:
+            logger.error(f"Download/Process error: {e}")
+            raise HTTPException(status_code=500, detail="Error processing file from storage")
+
         return {"pages": content_data}
         
     except HTTPException:
@@ -639,8 +684,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from fastapi.staticfiles import StaticFiles
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+# Remove static mount for uploads since we use Supabase now, 
+# but keep it in case someone really wants local for testing if configured differently (omitted here for cleanliness)
+# app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 logging.basicConfig(
     level=logging.INFO,
