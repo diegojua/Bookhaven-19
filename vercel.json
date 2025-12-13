@@ -1,6 +1,8 @@
 {
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index.py" },
-    { "source": "/(.*)", "destination": "/frontend/index.html" }
+    { "source": "/assets/(.*)", "destination": "/frontend/dist/assets/$1" },
+    { "source": "/(.*\\.(js|css|png|jpg|jpeg|svg|ico|json|webmanifest|woff|woff2))", "destination": "/frontend/dist/$1" },
+    { "source": "/(.*)", "destination": "/frontend/dist/index.html" }
   ]
 }
